@@ -1,0 +1,30 @@
+name: Wasmtime
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y php-cli php-dev php-pear pkg-config build-essential libffi-dev libssl-dev curl wabt
+          curl https://sh.rustup.rs -sSf | sh -s -- -y
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Build extension and examples
+        working-directory: wasmtime
+        run: ./build.sh
+
+      - name: Run examples
+        working-directory: wasmtime
+        run: |
+          LD_LIBRARY_PATH=$(pwd)/wasmtime-v0.32.0-x86_64-linux-c-api/lib php -d extension=$(pwd)/modules/wasmtime.so run.php
