@@ -391,7 +391,6 @@ PHP_METHOD(Wasmtime_Instance, __construct)
                         HashTable *wasi_ht = (Z_TYPE_P(wasi) == IS_ARRAY) ? Z_ARRVAL_P(wasi) : NULL;
                         wasi_config_t *cfg = wasi_config_new();
                         if (!cfg) { zend_throw_exception(zend_ce_exception, "wasi_config_new failed", 0); return; }
-                        /* inherit stdio/env/argv for simplicity */
                         wasi_config_inherit_stdin(cfg);
                         wasi_config_inherit_stdout(cfg);
                         wasi_config_inherit_stderr(cfg);
@@ -400,7 +399,41 @@ PHP_METHOD(Wasmtime_Instance, __construct)
                         if (wasi_ht) {
                                 zval *dir = zend_hash_str_find(wasi_ht, "dir", sizeof("dir")-1);
                                 if (dir && Z_TYPE_P(dir) == IS_STRING) {
-                                        wasi_config_preopen_dir(cfg, Z_STRVAL_P(dir), "/");
+                                        wasi_config_preopen_dir(cfg, Z_STRVAL_P(dir), "/",
+                                                WASMTIME_WASI_DIR_PERMS_READ | WASMTIME_WASI_DIR_PERMS_WRITE,
+                                                WASMTIME_WASI_FILE_PERMS_READ | WASMTIME_WASI_FILE_PERMS_WRITE);
+                                }
+                                zval *env = zend_hash_str_find(wasi_ht, "env", sizeof("env")-1);
+                                if (env && Z_TYPE_P(env) == IS_ARRAY) {
+                                        int envc = zend_hash_num_elements(Z_ARRVAL_P(env));
+                                        const char **names = safe_emalloc(envc, sizeof(char*), 0);
+                                        const char **values = safe_emalloc(envc, sizeof(char*), 0);
+                                        int idx = 0;
+                                        zend_string *ekey;
+                                        zval *eval;
+                                        ZEND_HASH_FOREACH_STR_KEY_VAL(Z_ARRVAL_P(env), ekey, eval) {
+                                                if (ekey && Z_TYPE_P(eval) == IS_STRING) {
+                                                        names[idx] = ZSTR_VAL(ekey);
+                                                        values[idx] = Z_STRVAL_P(eval);
+                                                        idx++;
+                                                }
+                                        } ZEND_HASH_FOREACH_END();
+                                        wasi_config_set_env(cfg, idx, names, values);
+                                        efree(names);
+                                        efree(values);
+                                }
+                                zval *args = zend_hash_str_find(wasi_ht, "args", sizeof("args")-1);
+                                if (args && Z_TYPE_P(args) == IS_ARRAY) {
+                                        int argc = zend_hash_num_elements(Z_ARRVAL_P(args));
+                                        const char **argv = safe_emalloc(argc, sizeof(char*), 0);
+                                        int idx = 0;
+                                        zval *arg;
+                                        ZEND_HASH_FOREACH_VAL(Z_ARRVAL_P(args), arg) {
+                                                convert_to_string_ex(arg);
+                                                argv[idx++] = Z_STRVAL_P(arg);
+                                        } ZEND_HASH_FOREACH_END();
+                                        wasi_config_set_argv(cfg, argc, argv);
+                                        efree(argv);
                                 }
                         }
                         wasmtime_context_t *cx = wasmtime_store_context(o->store);

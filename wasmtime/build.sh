@@ -1,6 +1,6 @@
 #!/bin/sh
 set -e
-VERSION=v0.32.0
+VERSION=v35.0.0
 if [ ! -d "wasmtime-$VERSION-x86_64-linux-c-api" ]; then
   curl -LO https://github.com/bytecodealliance/wasmtime/releases/download/$VERSION/wasmtime-$VERSION-x86_64-linux-c-api.tar.xz
   tar -xf wasmtime-$VERSION-x86_64-linux-c-api.tar.xz
