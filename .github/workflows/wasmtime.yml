@@ -38,9 +38,10 @@ jobs:
           BASE_URL=https://github.com/antmicro/python-wasi/releases/download/v0.1.3
           curl -L -o python3.wasm $BASE_URL/python3.wasm
           curl -L -o python.tar.gz $BASE_URL/python.tar.gz
-          mkdir -p wasi-python/bin wasi-python/lib
-          tar -xf python.tar.gz -C wasi-python/lib
-          mkdir -p wasi-python/lib/python3.10/lib-dynload
-          mv python3.wasm wasi-python/bin/
+          mkdir -p wasi-python/opt/wasi-python/bin \
+                     wasi-python/opt/wasi-python/lib
+          tar -xf python.tar.gz -C wasi-python/opt/wasi-python/lib
+          mkdir -p wasi-python/opt/wasi-python/lib/python3.10/lib-dynload
+          mv python3.wasm wasi-python/opt/wasi-python/bin/
           LD_LIBRARY_PATH=$(pwd)/wasmtime-v35.0.0-x86_64-linux-c-api/lib \
             php -d extension=$(pwd)/modules/wasmtime.so python-wasi.php
