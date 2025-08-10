@@ -29,7 +29,7 @@ jobs:
       - name: Run examples
         working-directory: wasmtime
         run: |
-          LD_LIBRARY_PATH=$(pwd)/wasmtime-v0.32.0-x86_64-linux-c-api/lib \
+          LD_LIBRARY_PATH=$(pwd)/wasmtime-v35.0.0-x86_64-linux-c-api/lib \
             php -d extension=$(pwd)/modules/wasmtime.so run.php
 
       - name: Run python.wasm
@@ -42,5 +42,5 @@ jobs:
           tar -xf python.tar.gz -C wasi-python/lib
           mkdir -p wasi-python/lib/python3.10/lib-dynload
           mv python3.wasm wasi-python/bin/
-          LD_LIBRARY_PATH=$(pwd)/wasmtime-v0.32.0-x86_64-linux-c-api/lib \
+          LD_LIBRARY_PATH=$(pwd)/wasmtime-v35.0.0-x86_64-linux-c-api/lib \
             php -d extension=$(pwd)/modules/wasmtime.so python-wasi.php
