@@ -65,6 +65,7 @@ emconfigure ./configure \
 emmake make >/dev/null
 
 # Link to wasm
-emcc MagickWand/.libs/libMagickWand-7.Q16HDRI.a MagickCore/.libs/libMagickCore-7.Q16HDRI.a $LDFLAGS $LIBS -s STANDALONE_WASM=1 -o "$DIST_DIR/imagemagick.wasm"
+emcc MagickWand/.libs/libMagickWand-7.Q16HDRI.a MagickCore/.libs/libMagickCore-7.Q16HDRI.a \
+  $LDFLAGS $LIBS --no-entry -sSTANDALONE_WASM=1 -o "$DIST_DIR/imagemagick.wasm"
 
 printf "Built wasm module at %s/imagemagick.wasm\n" "$DIST_DIR"
