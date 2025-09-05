@@ -5,3 +5,7 @@
 .cache/phpcs.cache
 /phpunit.xml
 /.phpunit.result.cache
+
+dist/
+build/
+

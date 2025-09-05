@@ -1,0 +1,25 @@
+name: build-imagemagick-wasm
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v12
+        with:
+          version: 3.1.45
+          actions-cache-key: emsdk-cache
+      - name: Build ImageMagick WASM
+        run: scripts/build_imagemagick_wasm.sh
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: imagemagick-wasm
+          path: dist/imagemagick-wasm.zip
