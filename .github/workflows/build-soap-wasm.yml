@@ -1,0 +1,44 @@
+name: Build SOAP Wasm
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout plugin
+        uses: actions/checkout@v4
+
+      - name: Checkout playground deps
+        uses: actions/checkout@v4
+        with:
+          repository: WordPress/wordpress-playground
+          path: wordpress-playground
+
+      - name: Setup Emscripten
+        uses: mymindstorm/setup-emsdk@v1
+        with:
+          version: latest
+          actions-cache-key: emsdk-latest
+
+      - name: Fetch PHP source
+        run: git clone --depth=1 --branch=php-8.2.12 https://github.com/php/php-src.git
+
+      - name: Build SOAP extension
+        working-directory: php-src
+        run: |
+          emconfigure ./buildconf --force
+          emconfigure ./configure --disable-all --enable-soap=static --host=wasm32-unknown-emscripten --build=x86_64-linux-gnu \
+            CPPFLAGS="-I$GITHUB_WORKSPACE/wordpress-playground/packages/php-wasm/compile/libxml2/jspi/dist/root/lib/include/libxml2" \
+            LDFLAGS="-L$GITHUB_WORKSPACE/wordpress-playground/packages/php-wasm/compile/libxml2/jspi/dist/root/lib/lib" \
+            LIBS="-lxml2"
+          emmake make -C ext/soap
+          cp ext/soap/modules/soap.a $GITHUB_WORKSPACE/soap-wasm.a
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: php-soap-wasm
+          path: soap-wasm.a
