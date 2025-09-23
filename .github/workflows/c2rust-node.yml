@@ -1,0 +1,65 @@
+name: Build Node.js with C2Rust
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  transpile-node:
+    name: Transpile Node.js to Rust
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \ 
+            build-essential \ 
+            python3 \ 
+            python3-pip \ 
+            clang \ 
+            llvm-dev \ 
+            libclang-dev \ 
+            pkg-config \ 
+            bear \ 
+            git
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install C2Rust
+        run: |
+          cargo install --locked --git https://github.com/immunant/c2rust c2rust
+
+      - name: Clone Node.js
+        run: |
+          git clone --depth 1 https://github.com/nodejs/node.git
+
+      - name: Configure and build Node.js with Bear
+        working-directory: node
+        run: |
+          ./configure
+          bear -- make -j2
+
+      - name: Run C2Rust transpile
+        working-directory: node
+        env:
+          RUST_BACKTRACE: 1
+        run: |
+          mkdir -p build-c2rust
+          c2rust transpile \
+            --compile-commands compile_commands.json \
+            --emit-build-files \
+            --build-dir build-c2rust
+
+      - name: Archive transpiled output
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-c2rust-output
+          path: node/build-c2rust
