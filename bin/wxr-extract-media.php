@@ -108,7 +108,7 @@ $resuming = $cursor['items_processed'] > 0;
 if ( $resuming ) {
 	fwrite( STDOUT, "Resuming from item {$cursor['items_processed']}...\n" );
 } else {
-	fwrite( STDOUT, "Scanning {$args['input']} for media references...\n" );
+	fwrite( STDOUT, "Processing {$args['input']}...\n" );
 }
 
 $cursor = WXR_Media_Extractor::process(
@@ -119,29 +119,18 @@ $cursor = WXR_Media_Extractor::process(
 );
 
 if ( 'complete' === $cursor['phase'] ) {
-	$count = count( $cursor['discovered_media'] );
-	// Subtract any that matched existing attachments.
-	$existing = count( $cursor['existing_attachment_urls'] );
-	$new      = 0;
-	foreach ( $cursor['discovered_media'] as $url => $_ ) {
-		if ( ! isset( $cursor['existing_attachment_urls'][ $url ] ) ) {
-			$new++;
-		}
-	}
+	$emitted = count( $cursor['emitted_urls'] );
 
 	fwrite( STDOUT, "Done! Processed {$cursor['items_processed']} items.\n" );
-	fwrite( STDOUT, "Found {$count} media URLs in post content.\n" );
-	if ( $existing > 0 ) {
-		fwrite( STDOUT, "Skipped {$existing} URLs that already had attachment entries.\n" );
-	}
-	fwrite( STDOUT, "Added {$new} new attachment items to {$args['output']}.\n" );
+	fwrite( STDOUT, "Found {$emitted} unique media URLs.\n" );
+	fwrite( STDOUT, "Added {$cursor['media_added']} new attachment items to {$args['output']}.\n" );
 } else {
 	$pct = '';
 	if ( $args['batch_size'] > 0 ) {
 		$pct = " (batch of {$args['batch_size']})";
 	}
 	fwrite( STDOUT, "Paused after {$cursor['items_processed']} items{$pct}.\n" );
-	fwrite( STDOUT, "Found " . count( $cursor['discovered_media'] ) . " media URLs so far.\n" );
+	fwrite( STDOUT, "Found " . count( $cursor['emitted_urls'] ) . " media URLs so far.\n" );
 	fwrite( STDOUT, "Run the same command again to continue.\n" );
 }
 

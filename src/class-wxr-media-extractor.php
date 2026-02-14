@@ -2,12 +2,14 @@
 /**
  * WXR Media Extractor
  *
- * Scans a WXR export file for media (images, video, audio, documents) embedded
- * in post content and generates corresponding attachment items so the WordPress
- * Importer will download them into the uploads directory.
+ * Transforms a WXR export file in a single streaming pass, injecting
+ * attachment items for media referenced in post content. This enables the
+ * WordPress Importer to download images/video/audio into the uploads
+ * directory even when the original export lacks explicit attachment entries.
  *
- * Uses streaming XML processing (XMLReader) with cursor-based pause/resume
- * support for handling very large WXR files.
+ * Uses line-by-line I/O so memory usage stays flat regardless of file size.
+ * Supports cursor-based pause/resume for processing very large WXR files
+ * in batches.
  *
  * Usage:
  *   // One-shot processing:
@@ -24,6 +26,12 @@
 /**
  * Transforms a WXR file by adding attachment items for media referenced in
  * post content but not present as separate attachment entries.
+ *
+ * Single-pass streaming: reads line-by-line, writes as it goes, and emits
+ * new attachment items immediately after each post/page item. The cursor
+ * stores only the set of already-emitted URL strings and byte offsets,
+ * keeping memory proportional to the number of unique media URLs rather
+ * than the total file size.
  */
 class WXR_Media_Extractor {
 
@@ -49,22 +57,25 @@ class WXR_Media_Extractor {
 	 * @var array
 	 */
 	private static $default_cursor = array(
-		'phase'                   => 'scan',
-		'items_processed'         => 0,
-		'max_post_id'             => 0,
-		'existing_attachment_urls' => array(),
-		'discovered_media'        => array(),
-		'scan_complete'           => false,
-		'transform_complete'      => false,
-		'wp_namespace'            => 'http://wordpress.org/export/1.1/',
+		'phase'           => 'processing',
+		'items_processed' => 0,
+		'next_post_id'    => 0,
+		'emitted_urls'    => array(),
+		'input_offset'    => 0,
+		'output_offset'   => 0,
+		'media_added'     => 0,
 	);
 
 	/**
-	 * Run both scan and transform phases.
+	 * Process a WXR file in a single streaming pass.
 	 *
-	 * When batch_size is 0, processes the entire file in one call.
-	 * When batch_size > 0, processes that many items per call and saves
-	 * progress to cursor_file so the caller can resume later.
+	 * Reads the input line by line, copies everything to the output, and
+	 * after each <item> that contains media URLs in its content, appends
+	 * new attachment items for any URLs not yet emitted.
+	 *
+	 * When batch_size > 0, pauses after processing that many items and
+	 * saves progress to cursor_file. Re-running with the same arguments
+	 * resumes from where it left off.
 	 *
 	 * @param string      $input_file  Path to input WXR file.
 	 * @param string      $output_file Path to output WXR file.
@@ -73,281 +84,173 @@ class WXR_Media_Extractor {
 	 * @return array Cursor state after processing.
 	 */
 	public static function process( $input_file, $output_file, $cursor_file = null, $batch_size = 0 ) {
-		// When no cursor file is provided, use a temp file so state flows
-		// between the scan and transform phases within this call.
-		$temp_cursor = false;
-		if ( null === $cursor_file ) {
-			$cursor_file = tempnam( sys_get_temp_dir(), 'wxr_cursor_' );
-			$temp_cursor = true;
-		}
-
 		$cursor = self::load_cursor( $cursor_file );
 
-		// Phase 1: Scan.
-		if ( ! $cursor['scan_complete'] ) {
-			$cursor = self::scan( $input_file, $cursor_file, $batch_size );
-
-			if ( ! $cursor['scan_complete'] ) {
-				if ( $temp_cursor ) {
-					@unlink( $cursor_file );
-				}
-				return $cursor;
-			}
-		}
-
-		// Phase 2: Transform.
-		if ( ! $cursor['transform_complete'] ) {
-			$cursor = self::transform( $input_file, $output_file, $cursor_file );
-		}
-
-		if ( $temp_cursor ) {
-			@unlink( $cursor_file );
-		}
-
-		return $cursor;
-	}
-
-	/**
-	 * Phase 1: Scan the WXR file to discover media URLs and existing attachments.
-	 *
-	 * Streams through the file item by item using XMLReader. Only one item
-	 * is in memory at a time. Progress is saved to cursor_file after each
-	 * batch so processing can be paused and resumed.
-	 *
-	 * @param string      $input_file  Path to input WXR file.
-	 * @param string|null $cursor_file Path to cursor file for pause/resume.
-	 * @param int         $batch_size  Items to process per batch (0 = unlimited).
-	 * @return array Cursor state after processing.
-	 */
-	public static function scan( $input_file, $cursor_file = null, $batch_size = 0 ) {
-		$cursor = self::load_cursor( $cursor_file );
-
-		if ( $cursor['scan_complete'] ) {
+		if ( 'complete' === $cursor['phase'] ) {
 			return $cursor;
 		}
 
-		$reader = new XMLReader();
-		if ( ! $reader->open( $input_file ) ) {
-			throw new RuntimeException( "Cannot open file: {$input_file}" );
+		$in = fopen( $input_file, 'r' );
+		if ( ! $in ) {
+			throw new RuntimeException( "Cannot open input file: {$input_file}" );
 		}
 
-		// Detect the WP namespace from the root element.
-		while ( $reader->read() ) {
-			if ( $reader->nodeType === XMLReader::ELEMENT && 'rss' === $reader->localName ) {
-				$wp_ns = $reader->lookupNamespace( 'wp' );
-				if ( $wp_ns ) {
-					$cursor['wp_namespace'] = $wp_ns;
-				}
-				break;
-			}
+		// When resuming, open output for append; otherwise truncate.
+		$resuming = $cursor['input_offset'] > 0;
+		$out      = fopen( $output_file, $resuming ? 'r+' : 'w' );
+		if ( ! $out ) {
+			fclose( $in );
+			throw new RuntimeException( "Cannot open output file: {$output_file}" );
 		}
 
-		$items_seen    = 0;
+		if ( $resuming ) {
+			fseek( $in, $cursor['input_offset'] );
+			fseek( $out, $cursor['output_offset'] );
+			ftruncate( $out, $cursor['output_offset'] );
+		}
+
+		// First pass through: determine next_post_id if not set.
+		// We need a post_id higher than any existing one. On the first call
+		// we do a quick pre-scan for the highest post_id. This is the only
+		// part that reads ahead, but it only extracts a number per item and
+		// discards everything else.
+		if ( 0 === $cursor['next_post_id'] && ! $resuming ) {
+			$cursor['next_post_id'] = self::find_max_post_id( $input_file ) + 1;
+		}
+
+		$in_item        = false;
+		$item_buffer    = '';
+		$items_seen     = $resuming ? $cursor['items_processed'] : 0;
 		$items_in_batch = 0;
 
-		while ( $reader->read() ) {
-			if ( $reader->nodeType !== XMLReader::ELEMENT || 'item' !== $reader->localName ) {
-				continue;
+		while ( false !== ( $line = fgets( $in, 65536 ) ) ) {
+			// Detect <item> open tag.
+			if ( ! $in_item && false !== strpos( $line, '<item>' ) ) {
+				$in_item     = true;
+				$item_buffer = '';
 			}
 
-			// Only process top-level <item> elements (direct children of <channel>).
-			if ( $reader->depth > 2 ) {
-				continue;
-			}
+			if ( $in_item ) {
+				$item_buffer .= $line;
 
-			$items_seen++;
+				// Detect </item> close tag.
+				if ( false !== strpos( $line, '</item>' ) ) {
+					$in_item = false;
+					$items_seen++;
 
-			// Skip already-processed items when resuming.
-			if ( $items_seen <= $cursor['items_processed'] ) {
-				// Use next() to skip over this element's subtree efficiently.
-				$reader->next();
-				continue;
-			}
+					// Skip items we already processed in a prior batch.
+					if ( $items_seen <= $cursor['items_processed'] ) {
+						// Still write the raw item through.
+						fwrite( $out, $item_buffer );
+						$item_buffer = '';
+						continue;
+					}
 
-			// Read the full <item> XML. Only one item in memory at a time.
-			$item_xml = $reader->readOuterXml();
-			$item     = self::parse_item_xml( $item_xml, $cursor['wp_namespace'] );
+					// Write the original item.
+					fwrite( $out, $item_buffer );
 
-			// Track the highest post_id for generating new unique IDs.
-			if ( ! empty( $item['post_id'] ) ) {
-				$cursor['max_post_id'] = max( $cursor['max_post_id'], (int) $item['post_id'] );
-			}
+					// Parse and emit attachments for any new media URLs.
+					$item = self::parse_item_xml( $item_buffer );
 
-			// Record existing attachment URLs so we don't create duplicates.
-			if ( ! empty( $item['post_type'] ) && 'attachment' === $item['post_type'] ) {
-				$url = '';
-				if ( ! empty( $item['attachment_url'] ) ) {
-					$url = $item['attachment_url'];
-				} elseif ( ! empty( $item['guid'] ) ) {
-					$url = $item['guid'];
-				}
-				if ( $url ) {
-					$cursor['existing_attachment_urls'][ $url ] = true;
-				}
-			}
+					// Skip if this item is itself an attachment.
+					if ( 'attachment' !== $item['post_type'] && ! empty( $item['content'] ) ) {
+						$media_urls = self::extract_media_urls( $item['content'] );
+						foreach ( $media_urls as $url ) {
+							if ( isset( $cursor['emitted_urls'][ $url ] ) ) {
+								continue;
+							}
+							$cursor['emitted_urls'][ $url ] = true;
+							$cursor['media_added']++;
 
-			// Extract media URLs from the post content.
-			if ( ! empty( $item['content'] ) ) {
-				$urls = self::extract_media_urls( $item['content'] );
-				foreach ( $urls as $url ) {
-					if ( ! isset( $cursor['discovered_media'][ $url ] ) ) {
-						$cursor['discovered_media'][ $url ] = array(
-							'title'     => self::url_to_title( $url ),
-							'post_date' => ! empty( $item['post_date'] ) ? $item['post_date'] : '',
-						);
+							$attachment_xml = self::generate_attachment_xml(
+								$url,
+								$cursor['next_post_id']++,
+								array(
+									'title'     => self::url_to_title( $url ),
+									'post_date' => $item['post_date'],
+								)
+							);
+							fwrite( $out, $attachment_xml );
+						}
+					}
+
+					// If this IS an attachment, record its URL so we don't
+					// emit a duplicate for it later.
+					if ( 'attachment' === $item['post_type'] ) {
+						$att_url = ! empty( $item['attachment_url'] ) ? $item['attachment_url'] : $item['guid'];
+						if ( $att_url ) {
+							$cursor['emitted_urls'][ $att_url ] = true;
+						}
+					}
+
+					$cursor['items_processed'] = $items_seen;
+					$item_buffer               = '';
+					$items_in_batch++;
+
+					// Check batch limit.
+					if ( $batch_size > 0 && $items_in_batch >= $batch_size ) {
+						$cursor['input_offset']  = ftell( $in );
+						$cursor['output_offset'] = ftell( $out );
+						self::save_cursor( $cursor_file, $cursor );
+						fclose( $in );
+						fclose( $out );
+						return $cursor;
 					}
 				}
-			}
-
-			$cursor['items_processed'] = $items_seen;
-			$items_in_batch++;
-
-			// Check batch limit for pause/resume.
-			if ( $batch_size > 0 && $items_in_batch >= $batch_size ) {
-				$cursor['scan_complete'] = false;
-				self::save_cursor( $cursor_file, $cursor );
-				$reader->close();
-				return $cursor;
-			}
-
-			// Skip past this item's subtree.
-			$reader->next();
-		}
-
-		$reader->close();
-
-		// Remove discovered URLs that already have attachment items.
-		foreach ( $cursor['existing_attachment_urls'] as $url => $_ ) {
-			unset( $cursor['discovered_media'][ $url ] );
-		}
-
-		$cursor['scan_complete'] = true;
-		self::save_cursor( $cursor_file, $cursor );
-		return $cursor;
-	}
-
-	/**
-	 * Phase 2: Transform the WXR file by injecting attachment items.
-	 *
-	 * Streams the input file to the output file, inserting generated
-	 * attachment items for discovered media URLs before the closing
-	 * </channel> tag.
-	 *
-	 * @param string      $input_file  Path to input WXR file.
-	 * @param string      $output_file Path to output WXR file.
-	 * @param string|null $cursor_file Path to cursor file.
-	 * @return array Cursor state after transform.
-	 */
-	public static function transform( $input_file, $output_file, $cursor_file = null ) {
-		$cursor = self::load_cursor( $cursor_file );
-
-		if ( ! $cursor['scan_complete'] ) {
-			throw new RuntimeException(
-				'Scan phase must complete before transform. Run scan() first.'
-			);
-		}
-
-		if ( $cursor['transform_complete'] ) {
-			return $cursor;
-		}
-
-		// Filter out URLs that already have attachment items.
-		$new_media = array();
-		foreach ( $cursor['discovered_media'] as $url => $info ) {
-			if ( ! isset( $cursor['existing_attachment_urls'][ $url ] ) ) {
-				$new_media[ $url ] = $info;
-			}
-		}
-
-		// Generate attachment XML for each new media URL.
-		$next_id         = $cursor['max_post_id'] + 1;
-		$attachments_xml = '';
-		foreach ( $new_media as $url => $info ) {
-			$attachments_xml .= self::generate_attachment_xml( $url, $next_id++, $info );
-		}
-
-		// Stream input to output, injecting attachments before </channel>.
-		$in  = fopen( $input_file, 'r' );
-		$out = fopen( $output_file, 'w' );
-
-		if ( ! $in || ! $out ) {
-			throw new RuntimeException( 'Cannot open input or output file.' );
-		}
-
-		$buffer         = '';
-		$injection_done = false;
-		$chunk_size     = 8192;
-
-		while ( ! feof( $in ) ) {
-			$chunk = fread( $in, $chunk_size );
-			if ( false === $chunk ) {
-				break;
-			}
-			$buffer .= $chunk;
-
-			if ( ! $injection_done ) {
-				$pos = strpos( $buffer, '</channel>' );
-				if ( false !== $pos ) {
-					// Write everything before </channel>.
-					fwrite( $out, substr( $buffer, 0, $pos ) );
-					// Inject the attachment items.
-					fwrite( $out, $attachments_xml );
-					// Write </channel> and the rest.
-					fwrite( $out, substr( $buffer, $pos ) );
-					$buffer         = '';
-					$injection_done = true;
-					continue;
-				}
-
-				// Keep the tail of the buffer in case </channel> spans chunks.
-				if ( strlen( $buffer ) > 20 ) {
-					fwrite( $out, substr( $buffer, 0, -20 ) );
-					$buffer = substr( $buffer, -20 );
-				}
 			} else {
-				fwrite( $out, $buffer );
-				$buffer = '';
-			}
-		}
-
-		// Flush remaining buffer.
-		if ( strlen( $buffer ) > 0 ) {
-			if ( ! $injection_done ) {
-				// Last chance to find </channel>.
-				$pos = strpos( $buffer, '</channel>' );
-				if ( false !== $pos ) {
-					fwrite( $out, substr( $buffer, 0, $pos ) );
-					fwrite( $out, $attachments_xml );
-					fwrite( $out, substr( $buffer, $pos ) );
-				} else {
-					// No </channel> found; append attachments at end of file.
-					fwrite( $out, $buffer );
-				}
-			} else {
-				fwrite( $out, $buffer );
+				// Outside an <item>: write through verbatim.
+				fwrite( $out, $line );
 			}
 		}
 
 		fclose( $in );
 		fclose( $out );
 
-		$cursor['transform_complete'] = true;
-		$cursor['phase']              = 'complete';
+		$cursor['phase'] = 'complete';
 		self::save_cursor( $cursor_file, $cursor );
 		return $cursor;
+	}
+
+	/**
+	 * Quick pre-scan to find the highest wp:post_id in the file.
+	 *
+	 * Reads line-by-line, only looking for <wp:post_id> values.
+	 * Does not load the file into memory.
+	 *
+	 * @param string $input_file Path to WXR file.
+	 * @return int Highest post_id found, or 0.
+	 */
+	private static function find_max_post_id( $input_file ) {
+		$max = 0;
+		$fh  = fopen( $input_file, 'r' );
+		if ( ! $fh ) {
+			return $max;
+		}
+
+		while ( false !== ( $line = fgets( $fh, 65536 ) ) ) {
+			if ( preg_match( '/<wp:post_id>(\d+)<\/wp:post_id>/', $line, $m ) ) {
+				$id = (int) $m[1];
+				if ( $id > $max ) {
+					$max = $id;
+				}
+			}
+		}
+
+		fclose( $fh );
+		return $max;
 	}
 
 	/**
 	 * Parse a single <item> XML string into an associative array.
 	 *
 	 * Uses regex extraction to avoid namespace complications when parsing
-	 * fragments outside of their parent document context.
+	 * fragments outside of their parent document context. Only extracts
+	 * the fields needed for media extraction.
 	 *
 	 * @param string $item_xml Raw XML string of an <item> element.
-	 * @param string $wp_ns   The WP namespace URI (unused, kept for future use).
 	 * @return array Parsed item fields.
 	 */
-	private static function parse_item_xml( $item_xml, $wp_ns = '' ) {
+	private static function parse_item_xml( $item_xml ) {
 		$item = array(
 			'post_id'        => '',
 			'post_type'      => '',
@@ -357,34 +260,28 @@ class WXR_Media_Extractor {
 			'guid'           => '',
 		);
 
-		// Extract wp:post_id.
 		if ( preg_match( '/<wp:post_id>(\d+)<\/wp:post_id>/', $item_xml, $m ) ) {
 			$item['post_id'] = $m[1];
 		}
 
-		// Extract wp:post_type.
 		if ( preg_match( '/<wp:post_type>([^<]+)<\/wp:post_type>/', $item_xml, $m ) ) {
 			$item['post_type'] = trim( $m[1] );
 		}
 
-		// Extract wp:post_date.
 		if ( preg_match( '/<wp:post_date>(?:<!\[CDATA\[)?([^\]<]+)(?:\]\]>)?<\/wp:post_date>/', $item_xml, $m ) ) {
 			$item['post_date'] = trim( $m[1] );
 		}
 
-		// Extract content:encoded (CDATA or plain).
 		if ( preg_match( '/<content:encoded><!\[CDATA\[(.*?)\]\]><\/content:encoded>/s', $item_xml, $m ) ) {
 			$item['content'] = $m[1];
 		} elseif ( preg_match( '/<content:encoded>(.*?)<\/content:encoded>/s', $item_xml, $m ) ) {
 			$item['content'] = html_entity_decode( $m[1], ENT_QUOTES, 'UTF-8' );
 		}
 
-		// Extract wp:attachment_url.
 		if ( preg_match( '/<wp:attachment_url>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/wp:attachment_url>/', $item_xml, $m ) ) {
 			$item['attachment_url'] = trim( $m[1] );
 		}
 
-		// Extract guid.
 		if ( preg_match( '/<guid[^>]*>([^<]+)<\/guid>/', $item_xml, $m ) ) {
 			$item['guid'] = trim( $m[1] );
 		}
@@ -460,7 +357,6 @@ class WXR_Media_Extractor {
 	 * @return bool True if the URL has a recognized media file extension.
 	 */
 	private static function is_media_url( $url ) {
-		// Must be an absolute HTTP(S) URL.
 		if ( ! preg_match( '#^https?://#i', $url ) ) {
 			return false;
 		}
@@ -519,11 +415,6 @@ class WXR_Media_Extractor {
 
 	/**
 	 * Generate WXR XML for an attachment item.
-	 *
-	 * The generated XML matches the format that the WordPress Importer expects:
-	 * an <item> with wp:post_type=attachment and wp:attachment_url pointing to
-	 * the remote media file. When imported, the importer will download the file
-	 * and create a local attachment post.
 	 *
 	 * @param string $url     Remote media URL.
 	 * @param int    $post_id Post ID to assign.
