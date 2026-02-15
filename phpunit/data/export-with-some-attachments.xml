@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- WXR test file: posts with images AND an existing attachment for one of them -->
+<rss version="2.0"
+	xmlns:excerpt="http://wordpress.org/export/1.1/excerpt/"
+	xmlns:content="http://purl.org/rss/1.0/modules/content/"
+	xmlns:wfw="http://wellformedweb.org/CommentAPI/"
+	xmlns:dc="http://purl.org/dc/elements/1.1/"
+	xmlns:wp="http://wordpress.org/export/1.1/"
+>
+
+<channel>
+	<title>Test Blog</title>
+	<link>http://example.com</link>
+	<description>A test blog with mixed attachments</description>
+	<pubDate>Mon, 15 Jan 2024 10:00:00 +0000</pubDate>
+	<language>en</language>
+	<wp:wxr_version>1.1</wp:wxr_version>
+	<wp:base_site_url>http://example.com</wp:base_site_url>
+	<wp:base_blog_url>http://example.com</wp:base_blog_url>
+
+	<wp:author><wp:author_id>1</wp:author_id><wp:author_login>admin</wp:author_login><wp:author_email>admin@example.com</wp:author_email><wp:author_display_name><![CDATA[admin]]></wp:author_display_name><wp:author_first_name><![CDATA[]]></wp:author_first_name><wp:author_last_name><![CDATA[]]></wp:author_last_name></wp:author>
+
+	<generator>http://wordpress.org/?v=6.4</generator>
+
+	<item>
+		<title>Post Referencing Existing Attachment</title>
+		<link>http://example.com/?p=10</link>
+		<pubDate>Mon, 15 Jan 2024 10:30:00 +0000</pubDate>
+		<dc:creator>admin</dc:creator>
+		<guid isPermaLink="false">http://example.com/?p=10</guid>
+		<description></description>
+		<content:encoded><![CDATA[<p>This image already has an attachment item:</p>
+<img src="http://example.com/wp-content/uploads/2024/01/existing-photo.jpg" />
+<p>But this one does not:</p>
+<img src="http://example.com/wp-content/uploads/2024/01/missing-photo.jpg" />]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>10</wp:post_id>
+		<wp:post_date>2024-01-15 10:30:00</wp:post_date>
+		<wp:post_date_gmt>2024-01-15 10:30:00</wp:post_date_gmt>
+		<wp:comment_status>open</wp:comment_status>
+		<wp:ping_status>open</wp:ping_status>
+		<wp:post_name>post-referencing-existing-attachment</wp:post_name>
+		<wp:status>publish</wp:status>
+		<wp:post_parent>0</wp:post_parent>
+		<wp:menu_order>0</wp:menu_order>
+		<wp:post_type>post</wp:post_type>
+		<wp:post_password></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+	</item>
+	<item>
+		<title>existing-photo.jpg</title>
+		<link>http://example.com/?attachment_id=11</link>
+		<pubDate>Mon, 15 Jan 2024 10:00:00 +0000</pubDate>
+		<dc:creator>admin</dc:creator>
+		<guid isPermaLink="false">http://example.com/wp-content/uploads/2024/01/existing-photo.jpg</guid>
+		<description></description>
+		<content:encoded><![CDATA[]]></content:encoded>
+		<excerpt:encoded><![CDATA[]]></excerpt:encoded>
+		<wp:post_id>11</wp:post_id>
+		<wp:post_date>2024-01-15 10:00:00</wp:post_date>
+		<wp:post_date_gmt>2024-01-15 10:00:00</wp:post_date_gmt>
+		<wp:comment_status>closed</wp:comment_status>
+		<wp:ping_status>closed</wp:ping_status>
+		<wp:post_name>existing-photo</wp:post_name>
+		<wp:status>inherit</wp:status>
+		<wp:post_parent>10</wp:post_parent>
+		<wp:menu_order>0</wp:menu_order>
+		<wp:post_type>attachment</wp:post_type>
+		<wp:post_password></wp:post_password>
+		<wp:is_sticky>0</wp:is_sticky>
+		<wp:attachment_url>http://example.com/wp-content/uploads/2024/01/existing-photo.jpg</wp:attachment_url>
+	</item>
+</channel>
+</rss>
